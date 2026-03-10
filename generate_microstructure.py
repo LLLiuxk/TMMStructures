@@ -1,217 +1,267 @@
+"""
+Generate Microstructure Samples from Parameters
+=============================================
+Reads a parameterization schema (nodes and connections)
+and renders a 128x128 binary quarter-cell microstructure image.
+"""
+
 import numpy as np
+import math
 from PIL import Image, ImageDraw
 import os
 
-class MicrostructureGeneratorV2:
+def lines_intersect(p1, p2, p3, p4):
     """
-    Parametric generator for 2D periodic microstructures (V2: Boundary-Edge Point Topology).
-    Generates full 256x256 images.
-    
-    Parameters structure (array of shape 47,):
-    Indices 0-5:    Top/Bottom boundary node x-coordinates (3 pairs, mapped [0, 255])
-    Indices 6-11:   Left/Right boundary node y-coordinates (3 pairs, mapped [0, 255])
-    Indices 12-26:  Topology matrix (15 possible connections between the 6 distinct node pairs) in [0, 1] -> bool
-    Indices 27-41:  Bezier curve lateral offsets (-1.0 to 1.0) for the 15 connections
-    Index 42:       Global line thickness scaling in [0, 1]
-    Index 43-46:    Reserved/Padding
+    Checks if line segment (p1, p2) intersects with (p3, p4).
+    Uses standard CCW geometric check.
     """
-    def __init__(self, size=256):
-        self.size = size
+    def ccw(A, B, C):
+        return (C[1]-A[1]) * (B[0]-A[0]) > (B[1]-A[1]) * (C[0]-A[0])
         
-        # We define 6 'node groups' (pairs). A connection between group i and group j
-        # means we must draw the exact same connection taking into account periodicity.
-        # Group 0-2: Top/Bottom nodes (x is variable, y is 0 and 255)
-        # Group 3-5: Left/Right nodes (x is 0 and 255, y is variable)
-        
-        # 15 connections between the 6 groups (n*(n-1)/2 = 6*5/2)
-        self.all_group_edges = []
-        for i in range(6):
-            for j in range(i+1, 6):
-                self.all_group_edges.append((i, j))
-                
-    def _get_cubic_bezier_points(self, p1, p2, offset, num_pts=20):
-        """
-        Calculates points for a bezier curve between p1 and p2, deflected by offset.
-        offset is normal to the segment p1-p2.
-        """
-        x1, y1 = p1
-        x2, y2 = p2
-        
-        # Midpoint
-        mx, my = (x1+x2)/2.0, (y1+y2)/2.0
-        
-        # Vector p1->p2
-        dx, dy = x2-x1, y2-y1
-        length = np.hypot(dx, dy)
-        
-        if length < 1e-5:
-            return [p1, p2]
-            
-        # Normal vector
-        nx, ny = -dy/length, dx/length
-        
-        # Deflect control point by offset * length
-        cx = mx + nx * offset * length * 0.5
-        cy = my + ny * offset * length * 0.5
-        
-        # Quadratic Bezier
-        pts = []
-        for t in np.linspace(0, 1, num_pts):
-            xt = (1-t)**2 * x1 + 2*(1-t)*t*cx + t**2 * x2
-            yt = (1-t)**2 * y1 + 2*(1-t)*t*cy + t**2 * y2
-            pts.append((xt, yt))
-        return pts
-        
-    def generate(self, params, output_path=None):
-        params = np.array(params)
-        
-        # 1. Decode coordinates
-        t_x = params[0:3] * (self.size - 1)
-        l_y = params[6:9] * (self.size - 1)
-        
-        # Node instances: list of lists.
-        # nodes[group_id] = [point_instance_1, point_instance_2]
-        # For Top/Bottom groups (0, 1, 2)
-        nodes = []
-        for i in range(3):
-            # Top point, Bottom point
-            nodes.append([(t_x[i], 0), (t_x[i], self.size - 1)])
-            
-        # For Left/Right groups (3, 4, 5)
-        for i in range(3):
-            # Left point, Right point
-            nodes.append([(0, l_y[i]), (self.size - 1, l_y[i])])
-            
-        # 2. Decode topology
-        edge_weights = params[12:27]
-        offsets = params[27:42] * 2.0 - 1.0  # map to [-1, 1]
-        
-        # --- Topology Rules ---
-        # 1. Guarantee connectivity (Minimum Spanning Tree-like approach)
-        # 2. Minimize excessive crossings (Sparsity constraints)
-        
-        edge_indices = np.argsort(edge_weights)[::-1]  # Sort descending
-        parent = list(range(6))
-        
-        def find(i):
-            if parent[i] == i: return i
-            parent[i] = find(parent[i])
-            return parent[i]
-        
-        def union(i, j):
-            root_i = find(i)
-            root_j = find(j)
-            if root_i != root_j:
-                parent[root_i] = root_j
-                return True
-            return False
-        
-        edge_activations = np.zeros(15, dtype=bool)
-        edges_added = 0
-        
-        # Step 1: Spanning tree for connectivity
-        for idx in edge_indices:
-            u, v = self.all_group_edges[idx]
-            if union(u, v):
-                edge_activations[idx] = True
-                edges_added += 1
-                if edges_added == 5: # 6 nodes need 5 edges to be fully connected
-                    break
-                    
-        # Step 2: Add a few more edges if weight is high, but avoid too many 
-        MAX_EXTRA_EDGES = 2 # Max extra edges to limit crossings
-        extra_edges = 0
-        for idx in edge_indices:
-            if not edge_activations[idx] and edge_weights[idx] > 0.6:
-                edge_activations[idx] = True
-                extra_edges += 1
-                if extra_edges >= MAX_EXTRA_EDGES:
-                    break
-        
-        # --- Geometry Rules ---
-        # Base thickness is 20% of boundary length 
-        base_thickness = self.size * 0.2
-        # Adjust based on parameter (range: 0.5x to 1.5x of base thickness)
-        thickness = int(round(base_thickness * (0.5 + params[42])))
-        
-        img = Image.new('L', (self.size, self.size), color=255)
-        draw = ImageDraw.Draw(img)
-        
-        active_instances = set()
-        
-        # 3. Draw edges with periodicity
-        for k, (u, v) in enumerate(self.all_group_edges):
-            if not edge_activations[k]:
-                continue
-                
-            offset = offsets[k]
-            
-            # To maintain periodicity, if we connect group U to group V,
-            # we must choose the instances (or wrap around) so that the line 
-            # drawn physically matches when tiled.
-            # Easiest way to handle straight/curved lines that cross boundaries:
-            # We draw the connection from U_instance1 to V_instanceX, 
-            # and replicate it at all periodic offsets (-self.size, 0, +self.size).
-            
-            # Let's just pick the primary instance of U and V (e.g. Top/Left)
-            p1 = nodes[u][0]
-            p2 = nodes[v][0]
-            
-            # We draw the line, but we also draw 9 translated copies to ensure 
-            # boundary wrapping is perfectly captured in the 256x256 window.
-            pts = self._get_cubic_bezier_points(p1, p2, offset, num_pts=30)
-            
-            for dx in [-self.size, 0, self.size]:
-                for dy in [-self.size, 0, self.size]:
-                    translated_pts = [(x+dx, y+dy) for x,y in pts]
-                    # Draw curve segments
-                    for idx in range(len(translated_pts)-1):
-                        draw.line([translated_pts[idx], translated_pts[idx+1]], fill=0, width=thickness)
-            
-            active_instances.add(nodes[u][0])
-            active_instances.add(nodes[u][1])
-            active_instances.add(nodes[v][0])
-            active_instances.add(nodes[v][1])
-            
-        # Draw joints
-        r = thickness / 2.0
-        for (cx, cy) in active_instances:
-            # Draw joints at primary and translated positions
-            for dx in [-self.size, 0, self.size]:
-                for dy in [-self.size, 0, self.size]:
-                    tx, ty = cx+dx, cy+dy
-                    if -r <= tx <= self.size+r and -r <= ty <= self.size+r:
-                        bbox = [int(round(tx - r)), int(round(ty - r)), 
-                                int(round(tx + r)), int(round(ty + r))]
-                        draw.ellipse(bbox, fill=0)
-            
-        if output_path:
-            os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
-            img.save(output_path)
-            
-        img_array = np.array(img, dtype=np.float64) / 255.0
-        binary_array = (img_array < 0.5).astype(np.float64)
-        return binary_array
+    return ccw(p1, p3, p4) != ccw(p2, p3, p4) and ccw(p1, p2, p3) != ccw(p1, p2, p4)
 
-if __name__ == '__main__':
-    import argparse
-    parser = argparse.ArgumentParser(description="Generate parameterized microstructure PNGs (V2).")
-    parser.add_argument('--sample', type=int, default=5, help='Number of random samples to generate')
-    args = parser.parse_args()
+
+def get_bezier_curve(p0, p1, p2, p3, steps=50):
+    """
+    Generates a list of points representing a cubic Bezier curve.
+    """
+    curve_pts = []
+    for t in np.linspace(0, 1, steps):
+        inv_t = 1.0 - t
+        x = (inv_t**3 * p0[0] + 
+             3 * inv_t**2 * t * p1[0] + 
+             3 * inv_t * t**2 * p2[0] + 
+             t**3 * p3[0])
+        y = (inv_t**3 * p0[1] + 
+             3 * inv_t**2 * t * p1[1] + 
+             3 * inv_t * t**2 * p2[1] + 
+             t**3 * p3[1])
+        curve_pts.append((x, y))
+    return curve_pts
+
+def get_normal_vector(edge_id):
+    """
+    Returns the normal vector (dx, dy) pointing INWARD from the specified outer edge.
+    E1 (Top) -> (0, 1)
+    E2 (Right) -> (-1, 0)
+    E3 (Bottom) -> (0, -1)
+    E4 (Left) -> (1, 0)
+    """
+    if edge_id == "E1": return (0, 1)
+    if edge_id == "E2": return (-1, 0)
+    if edge_id == "E3": return (0, -1)
+    if edge_id == "E4": return (1, 0)
+    return (0, 0)
+
+def render_microstructure(params, size=(128, 128), out_path="sample.png"):
+    """
+    Renders a 1/4 microstructure based on parameters.
+    size: (width, height) in pixels
+    """
+    # Create white background (void = 255)
+    img = Image.new('L', size, color=255)
+    draw = ImageDraw.Draw(img)
+    w, h = size
     
-    generator = MicrostructureGeneratorV2()
-    out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'Input', 'figures')
+    def map_pt(pt):
+        # pt in [0, 1]x[0,1]
+        return (pt[0] * w, pt[1] * h)
+
+    # 1. Parse Nodes
+    points_map = {}
+    nodes_def = params.get("nodes", {})
     
-    print(f"Generating {args.sample} random microstructures (V2)...")
-    np.random.seed(42)
-    
-    for i in range(args.sample):
-        params = np.random.rand(47)
-        # Ensure some connectivity
-        params[12:27] = np.random.uniform(0.1, 1.0, size=15)
-        # Make some curves highly curved, others straight
-        params[27:42] = np.random.uniform(0.0, 1.0, size=15)
+    for edge_id, arr in nodes_def.items():
+        for i, val in enumerate(arr):
+            pos = val[0]
+            width_norm = val[1]
+            
+            p, p1, p2 = None, None, None
+            if edge_id == "E1": # Top (y=0)
+                p = (pos, 0.0)
+                p1 = (pos - width_norm/2, 0.0)
+                p2 = (pos + width_norm/2, 0.0)
+            elif edge_id == "E2": # Right (x=1)
+                p = (1.0, pos)
+                p1 = (1.0, pos - width_norm/2)
+                p2 = (1.0, pos + width_norm/2)
+            elif edge_id == "E3": # Bottom (y=1)
+                p = (pos, 1.0)
+                p1 = (pos - width_norm/2, 1.0)
+                p2 = (pos + width_norm/2, 1.0)
+            elif edge_id == "E4": # Left (x=0)
+                p = (0.0, pos)
+                p1 = (0.0, pos - width_norm/2)
+                p2 = (0.0, pos + width_norm/2)
+                
+            if p:
+                points_map[(edge_id, i)] = {"edge": edge_id, "p": p, "p1": p1, "p2": p2}
+
+    # 2. Draw Connections
+    connections = params.get("connections", [])
+    for conn in connections:
+        p_start_ref = tuple(conn["start"])
+        p_end_ref = tuple(conn["end"])
+        c_type = conn.get("type", "straight_line")
         
-        out_path = os.path.join(out_dir, f'sample_v2_{i+1:03d}.png')
-        generator.generate(params, output_path=out_path)
-        print(f"Saved: {out_path}")
+        A = points_map[p_start_ref]
+        B = points_map[p_end_ref]
+        
+        a1 = A["p1"]
+        a2 = A["p2"]
+        b1 = B["p1"]
+        b2 = B["p2"]
+        
+        # Determine the non-intersecting mapping
+        # We want to connect a1 -> b_x and a2 -> b_y
+        if lines_intersect(a1, b1, a2, b2):
+            left_end = b2
+            right_end = b1
+        else:
+            left_end = b1
+            right_end = b2
+
+        if c_type == "straight_line":
+            # Map down to pixels and draw the quad
+            aq1 = map_pt(a1)
+            aq2 = map_pt(a2)
+            bq1 = map_pt(left_end)
+            bq2 = map_pt(right_end)
+            poly = [aq1, bq1, bq2, aq2]
+            draw.polygon(poly, fill=0)
+            
+        elif c_type == "bezier_curve":
+            # Compute bezier curves for both the left line (a1 -> left_end) 
+            # and right line (a2 -> right_end).
+            n_A = get_normal_vector(A["edge"])
+            n_B = get_normal_vector(B["edge"])
+            dist = math.hypot(A["p"][0] - B["p"][0], A["p"][1] - B["p"][1])
+            push = dist * 0.4
+            
+            # Left Curve
+            a1_c1 = (a1[0] + n_A[0]*push, a1[1] + n_A[1]*push)
+            b1_c2 = (left_end[0] + n_B[0]*push, left_end[1] + n_B[1]*push)
+            curve_left = get_bezier_curve(a1, a1_c1, b1_c2, left_end)
+            
+            # Right Curve
+            a2_c1 = (a2[0] + n_A[0]*push, a2[1] + n_A[1]*push)
+            b2_c2 = (right_end[0] + n_B[0]*push, right_end[1] + n_B[1]*push)
+            curve_right = get_bezier_curve(a2, a2_c1, b2_c2, right_end)
+            
+            poly_points = [map_pt(pt) for pt in curve_left]
+            poly_points.extend([map_pt(pt) for pt in reversed(curve_right)])
+            draw.polygon(poly_points, fill=0)
+
+        elif c_type == "tapered_line":
+            # Tapered Line: Smooth log-like transition of thickness.
+            # We can reuse the bezier logic, but the control points just stay exactly on the straight line
+            # connecting the centers, while adjusting the width exponentially or smoothed.
+            # A simple way to get a smooth bone-like taper is to use a bezier curve for the edges 
+            # with control points hugging the straight line but "pinched" towards the thinner end or center.
+            
+            # Left Edge Bezier
+            l_c1 = (a1[0] * 0.6 + left_end[0] * 0.4, a1[1] * 0.6 + left_end[1] * 0.4)
+            l_c2 = (a1[0] * 0.4 + left_end[0] * 0.6, a1[1] * 0.4 + left_end[1] * 0.6)
+            curve_left = get_bezier_curve(a1, l_c1, l_c2, left_end)
+            
+            # Right Edge Bezier
+            r_c1 = (a2[0] * 0.6 + right_end[0] * 0.4, a2[1] * 0.6 + right_end[1] * 0.4)
+            r_c2 = (a2[0] * 0.4 + right_end[0] * 0.6, a2[1] * 0.4 + right_end[1] * 0.6)
+            curve_right = get_bezier_curve(a2, r_c1, r_c2, right_end)
+            
+            poly_points = [map_pt(pt) for pt in curve_left]
+            poly_points.extend([map_pt(pt) for pt in reversed(curve_right)])
+            draw.polygon(poly_points, fill=0)
+            
+        elif c_type == "circular_arc":
+            # Circular Arc: Force a perfect circular curvature.
+            # We approximate a circular arc using Bezier cubic curves. 
+            # The magic constant for approximating a 90 degree circle arc is kappa = 0.552284749831
+            # Here, we dynamically calculate the push based on the intersection of the border normals.
+            n_A = get_normal_vector(A["edge"])
+            n_B = get_normal_vector(B["edge"])
+            
+            # If the vectors are opposite (parallel), a circle arc is impossible (would just be a straight line or S curve)
+            # fallback to straight_line logic
+            if n_A[0] == -n_B[0] and n_A[1] == -n_B[1]:
+                poly = [map_pt(a1), map_pt(left_end), map_pt(right_end), map_pt(a2)]
+                draw.polygon(poly, fill=0)
+            else:
+                # Calculate intersection of normals to find "corner"
+                push_A = abs(A["p"][0] - B["p"][0]) if n_A[0] != 0 else abs(A["p"][1] - B["p"][1])
+                push_B = abs(A["p"][0] - B["p"][0]) if n_B[0] != 0 else abs(A["p"][1] - B["p"][1])
+                
+                kappa = 0.55228  # bezier circle approximation
+                
+                # Left Curve Arc
+                a1_c1 = (a1[0] + n_A[0]*(push_A*kappa), a1[1] + n_A[1]*(push_A*kappa))
+                b1_c2 = (left_end[0] + n_B[0]*(push_B*kappa), left_end[1] + n_B[1]*(push_B*kappa))
+                curve_left = get_bezier_curve(a1, a1_c1, b1_c2, left_end)
+                
+                # Right Curve Arc
+                a2_c1 = (a2[0] + n_A[0]*(push_A*kappa), a2[1] + n_A[1]*(push_A*kappa))
+                b2_c2 = (right_end[0] + n_B[0]*(push_B*kappa), right_end[1] + n_B[1]*(push_B*kappa))
+                curve_right = get_bezier_curve(a2, a2_c1, b2_c2, right_end)
+                
+                poly_points = [map_pt(pt) for pt in curve_left]
+                poly_points.extend([map_pt(pt) for pt in reversed(curve_right)])
+                draw.polygon(poly_points, fill=0)
+
+    img.save(out_path)
+    print(f"Saved {out_path}")
+
+def main():
+    os.makedirs('Output/sample_structures', exist_ok=True)
+    
+    # Sample 1: Straight lines (Cross truss)
+    sample_1 = {
+        "nodes": {
+            "E1": [[0.5, 0.20]],
+            "E2": [[0.5, 0.10]],
+            "E3": [[0.5, 0.20]],
+            "E4": [[0.5, 0.10]]
+        },
+        "connections": [
+            {"start": ["E1", 0], "end": ["E4", 0], "type": "straight_line"},
+            {"start": ["E2", 0], "end": ["E3", 0], "type": "straight_line"},
+            {"start": ["E1", 0], "end": ["E2", 0], "type": "straight_line"}
+        ]
+    }
+    
+    # Sample 2: Tapered lines (Bone-like cross)
+    sample_2 = {
+        "nodes": {
+            "E1": [[0.5, 0.30]],
+            "E2": [[0.5, 0.10]],
+            "E3": [[0.5, 0.30]],
+            "E4": [[0.5, 0.10]]
+        },
+        "connections": [
+            {"start": ["E1", 0], "end": ["E4", 0], "type": "tapered_line"},
+            {"start": ["E2", 0], "end": ["E3", 0], "type": "tapered_line"},
+            {"start": ["E1", 0], "end": ["E2", 0], "type": "tapered_line"}
+        ]
+    }
+
+    # Sample 3: Circular Arcs loop 
+    sample_3 = {
+        "nodes": {
+            "E1": [[0.5, 0.12]],
+            "E2": [[0.5, 0.12]],
+            "E3": [[0.5, 0.12]],
+            "E4": [[0.5, 0.12]]
+        },
+        "connections": [
+            {"start": ["E1", 0], "end": ["E2", 0], "type": "circular_arc"},
+            {"start": ["E2", 0], "end": ["E3", 0], "type": "circular_arc"},
+            {"start": ["E3", 0], "end": ["E4", 0], "type": "circular_arc"},
+            {"start": ["E4", 0], "end": ["E1", 0], "type": "circular_arc"}
+        ]
+    }
+
+    render_microstructure(sample_1, out_path="Output/sample_structures/generated_straight.png")
+    render_microstructure(sample_2, out_path="Output/sample_structures/generated_tapered.png")
+    render_microstructure(sample_3, out_path="Output/sample_structures/generated_arc.png")
+
+if __name__ == "__main__":
+    main()

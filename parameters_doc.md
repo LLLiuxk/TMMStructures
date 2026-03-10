@@ -1,47 +1,74 @@
-# V2 Microstructure Generator - Parameter Space Documentation
+# 2D 微结构参数化逆向生成 - 参数化形式化描述
 
-This document lists all the adjustable parameters used by the `generate_microstructure.py` script. The generator takes a 1D vector of length **47**, with all values normalized to the range `[0.0, 1.0]`. You can sample from this space to generate a large dataset of periodic microstructures.
+为了构建可用于训练扩散模型（Diffusion Models）的微结构数据集，需要对 1/4 微结构（左上角）的拓扑和几何进行高度降维的参数化表示。
 
-## Parameter Vector Breakdown (`params.shape = (47,)`)
+## 1. 设计域域与边界 (Domain & Boundaries)
 
-### 1. Boundary Node Coordinates (Indices 0 - 11)
-These parameters determine the placement of connection nodes on the boundaries. To ensure periodicity, nodes on opposite boundaries share the same coordinates.
+微结构取四分之一（左上角），设计域为边长为 $L$ 的正方形（像素化时可映射为 $N \times N$ 的网格，例如 $128 \times 128$）。我们将域归一化为 $[0, 1] \times [0, 1]$。
 
-*   **`params[0:3]`**: $X$-coordinates for the **Top and Bottom** boundaries. 
-    *   3 nodes are positioned on the Top edge ($y=0$) and duplicated exactly on the Bottom edge ($y=255$).
-    *   Mapping: `x_coordinate = param * 255`
-*   *`params[3:6]`*: (Reserved / Unused in current symmetric mapping)
-*   **`params[6:9]`**: $Y$-coordinates for the **Left and Right** boundaries.
-    *   3 nodes are positioned on the Left edge ($x=0$) and duplicated exactly on the Right edge ($x=255$).
-    *   Mapping: `y_coordinate = param * 255`
-*   *`params[9:12]`*: (Reserved / Unused in current symmetric mapping)
+定义四条边界：
 
-### 2. Topology / Edge Connectivity (Indices 12 - 26)
-There are exactly 6 node pairs (3 Top/Bottom, 3 Left/Right). Exploring all possible pairs yields $\frac{6 \times 5}{2} = 15$ potential edges.
+- $E_1$（上边界）：$y = 0, x \in [0, 1]$
+- $E_2$（右边界）：$x = 1, y \in [0, 1]$
+- $E_3$（下边界）：$y = 1, x \in [0, 1]$
+- $E_4$（左边界）：$x = 0, y \in [0, 1]$
 
-*   **`params[12:27]`**: Edge activation weights (15 values).
-    *   **Generation Rule**: The algorithm sorts these 15 weights in descending order. It uses a **Minimum Spanning Tree (MST)** approach (Kruskal's algorithm) to guarantee that all activated nodes are fully connected into a single solid graph (eliminating floating components).
-    *   After forming the connected tree (which takes 5 edges), it adds up to **2 extra edges** (to create loops) provided their weight is $> 0.6$. This constraint naturally minimizes excessive crossings and overlaps.
+## 2. 节点参数化 (Nodes)
 
-### 3. Geometry & Morphological Curvature (Indices 27 - 41)
-Rather than simple straight lines, the structure can bend utilizing Quadratic Bezier Curves.
+为了更加严谨并进一步降低特征维度，我们规定：**每一条外边框上必须有且只有 1 个节点**，并且该点不仅包含位置 $t \in [0, 1]$，还自身附带一个**宽度参数** $d \in (0, 1)$。
+宽度与点关联（而非与边关联），从而在这个点所在的边界上真实地截取一段长度。
+整个微结构共有 4 个边框节点。
 
-*   **`params[27:42]`**: Lateral control point offsets for the 15 edges.
-    *   Mapping: `offset = param * 2.0 - 1.0` (Mapped to `[-1.0, 1.0]`).
-    *   If the underlying edge is activated, this parameter determines how much the strut bends away from a straight line. An offset of exactly 0.5 (mapped to 0.0) yields a perfectly straight strut.
+- **$E_1$ 上的点 (Top)**: 位置 $t_1$，对应线段端点 $E_1^l = (t_1 - d_1/2, 0)$ 和 $E_1^r = (t_1 + d_1/2, 0)$
+- **$E_2$ 上的点 (Right)**: 位置 $t_2$，对应线段端点 $E_2^t = (1, t_2 - d_2/2)$ 和 $E_2^b = (1, t_2 + d_2/2)$
+- **$E_3$ 上的点 (Bottom)**: 位置 $t_3$，对应线段端点 $E_3^l = (t_3 - d_3/2, 1)$ 和 $E_3^r = (t_3 + d_3/2, 1)$
+- **$E_4$ 上的点 (Left)**: 位置 $t_4$，对应线段端点 $E_4^t = (0, t_4 - d_4/2)$ 和 $E_4^b = (0, t_4 + d_4/2)$
 
-### 4. Global Thickness (Index 42)
-*   **`params[42]`**: Controls the global strut width.
-    *   **Base Width**: Fixed at `20%` of the image size ($256 \times 0.2 \approx 51.2$ pixels) to ensure a significant modulus.
-    *   **Mapping Rule**: `Thickness = round( Base_Width * (0.5 + param) )`
-    *   This means the generated thickness smoothly varies from $0.5\times$ to $1.5\times$ of the base width (approx. 25 pixels to 76 pixels).
+## 3. 连接与拓扑参数化 (Topology & Connections)
 
-### 5. Reserved Padding (Indices 43 - 46)
-*   **`params[43:47]`**: Currently not modifying the geometry (can be sampled randomly or set to zero for future use).
+利用定义好的点进行拓扑连接。
+**核心约束**：每个点的最大连接度（Degree）为 2，同时确保所有的连接属于**同一个单连通图（Single Connected Graph）**。
 
+一条连接线 $L_k$ 仅仅表示端点间的几何连接关系，其形状参数化如下：
 
-## Sampling Recommendation
-When generating large-scale datasets for diffusion models:
-1. Draw `params` from a uniform distribution `U(0, 1)` for all 47 dimensions.
-2. Pass the array into `generator.generate(params, output_path)`.
-3. The built-in physical rules (MST connectivity + thickness bounds) inherently guarantee that the resulting microstructure will be fully connected, perfectly periodic, and free from extremely thin, disconnected floating artifacts.
+$$ L_k = (P_{start}, P_{end}, \text{type}) $$
+
+- **`type`**: 可以是 `"straight_line"` 或 `"bezier_curve"`。
+- **渲染原理（直线 `straight_line`）**：对于 $P_{start}$ 和 $P_{end}$，提取它们所在边界上由于宽度 $d$ 生成的 2 个子端点（共 4 个点）。将这 4 个点按照不自交的顺序连接，形成一个填充的**四边形梯形**。
+- **渲染原理（曲线 `bezier_curve`）**：同样提取边界上的 4 个子端点。根据起点和终点所在的边界法线向内延伸，自动计算控制点。对于左侧子端点通过起点法线和终点法线生成一条三阶贝塞尔曲线，对右侧子端点同样生成一条。
+  - **重要约束**：生成的控制点连线必须与微结构外边界**垂直**，从而保证生成的曲线在靠近边界处切线是平移或垂直的，实现周期性边界的平滑切变。
+  - 最后，将这两条生成的贝塞尔曲线，与两个边界的宽度线段首尾相接，填充成一个带有固定宽度的“弯月形”平滑多边形面。
+
+## 4. 示例表示 (Schema Example)
+
+以下提供针对单点宽度与多种连接几何形式的具体表示示例（字典/JSON形式）：
+
+```json
+{
+  "nodes": {
+    "E1": [[0.5, 0.15]],        // p1位置=0.5, 宽度d=0.15
+    "E2": [[0.5, 0.12]],        
+    "E3": [[0.5, 0.15]],        
+    "E4": [[0.5, 0.12]]         
+  },
+  "connections": [
+    {
+      "start": ["E1", 0],       // 指向 E1
+      "end": ["E2", 0],         // 指向 E2
+      "type": "bezier_curve"    // 指定用端点法线平滑连接的曲线多边形
+    },
+    {
+      "start": ["E2", 0],
+      "end": ["E3", 0],
+      "type": "straight_line"
+    }
+  ]
+}
+
+```
+
+## 5. 从参数到图像的生成过程
+
+1. **解析节点**：根据 $t$ 和 $d$ 计算出每个边框节点在边界上占据的一根线段（由两个子端点构成）。将坐标缩放到图像网格系统（如 $128 \times 128$）。
+2. **绘制四边形实体**：对于任意连接的两个节点，取得这四个子端点，进行相交判断。剔除会产生自包含交叉（bowtie）的连线组合，确保绘制出一个顺滑不自交的多边形框。
+3. **二值化输出**：**实体用黑色（像素值0），空洞背景用白色（像素值255）**。使用多边形填充功能直接生成连续实心板块。生成的 $128 \times 128$ 的黑白二值图片，将作为 `homogenize.py` 的输入数据。
