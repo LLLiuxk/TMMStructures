@@ -34,8 +34,8 @@ import time
 
 def load_and_reconstruct(image_path, invert=True):
     """
-    Load a binary PNG image representing the top-left quarter of a unit cell,
-    and reconstruct the full unit cell via horizontal then vertical mirroring.
+    Load a full binary PNG image representing the complete unit cell.
+    (No longer mirrors 1/4 unit cells as per V2 generator).
 
     Args:
         image_path: path to the PNG image
@@ -46,18 +46,14 @@ def load_and_reconstruct(image_path, invert=True):
         density: 2D numpy array (nely x nelx) with 1.0=solid, 0.0=void
     """
     img = Image.open(image_path).convert('L')
-    quarter = np.array(img, dtype=np.float64) / 255.0
+    full = np.array(img, dtype=np.float64) / 255.0
 
     if invert:
         # Black = solid (1.0), White = void (0.0)
-        quarter = (quarter < 0.5).astype(np.float64)
+        full = (full < 0.5).astype(np.float64)
     else:
         # White = solid (1.0), Black = void (0.0)
-        quarter = (quarter > 0.5).astype(np.float64)
-
-    # Mirror: quarter is top-left
-    top_half = np.hstack([quarter, np.fliplr(quarter)])
-    full = np.vstack([top_half, np.flipud(top_half)])
+        full = (full > 0.5).astype(np.float64)
 
     return full
 
