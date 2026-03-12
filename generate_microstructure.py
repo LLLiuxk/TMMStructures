@@ -114,12 +114,52 @@ def render_microstructure(params, size=(128, 128), out_path="sample.png"):
         
         # Determine the non-intersecting mapping
         # We want to connect a1 -> b_x and a2 -> b_y
-        if lines_intersect(a1, b1, a2, b2):
-            left_end = b2
-            right_end = b1
+        
+        if A["edge"] == B["edge"]:
+            # Same edge connection: prevent crossover mathematically 
+            # by sorting based on the relevant coordinate
+            idx = 0 if A["edge"] in ["E1", "E3"] else 1 # x for Top/Bottom, y for Right/Left
+            
+            # Extract coordinates for sorting
+            pts = [
+                (a1[idx], a1), (a2[idx], a2), 
+                (b1[idx], b1), (b2[idx], b2)
+            ]
+            pts.sort(key=lambda item: item[0])
+            
+            # The middle two points belong to the inner connection
+            # The outer two points belong to the outer connection
+            # We must map a1 to the correct b and a2 to the correct b
+            
+            # If A is to the left/top of B
+            if min(a1[idx], a2[idx]) < min(b1[idx], b2[idx]):
+                # A's rightmost point (a2 usually) connects to B's leftmost point
+                left_end = b1 if b1[idx] < b2[idx] else b2
+                right_end = b2 if b1[idx] < b2[idx] else b1
+            else:
+                left_end = b2 if b1[idx] > b2[idx] else b1
+                right_end = b1 if b1[idx] > b2[idx] else b2
+
+            # Re-assign mapping based on geometric order to strictly avoid crossover
+            if a1[idx] < a2[idx]:
+                left_mod, right_mod = (b2, b1) if b2[idx] > b1[idx] else (b1, b2)
+                # Outer to outer, inner to inner
+                left_end, right_end = left_mod, right_mod
+            else:
+                left_mod, right_mod = (b1, b2) if b1[idx] < b2[idx] else (b2, b1)
+                left_end, right_end = left_mod, right_mod
+                
         else:
-            left_end = b1
-            right_end = b2
+            if lines_intersect(a1, b1, a2, b2):
+                left_end = b2
+                right_end = b1
+            else:
+                left_end = b1
+                right_end = b2
+
+        # Handle same-edge connection fallback before rendering blocks
+        if A["edge"] == B["edge"] and c_type in ("straight_line", "tapered_line"):
+            c_type = "bezier_curve"
 
         if c_type == "straight_line":
             # Map down to pixels and draw the quad
@@ -129,44 +169,65 @@ def render_microstructure(params, size=(128, 128), out_path="sample.png"):
             bq2 = map_pt(right_end)
             poly = [aq1, bq1, bq2, aq2]
             draw.polygon(poly, fill=0)
-            
-        elif c_type == "bezier_curve":
+        if c_type == "bezier_curve":
             # Compute bezier curves for both the left line (a1 -> left_end) 
             # and right line (a2 -> right_end).
             n_A = get_normal_vector(A["edge"])
             n_B = get_normal_vector(B["edge"])
             dist = math.hypot(A["p"][0] - B["p"][0], A["p"][1] - B["p"][1])
-            push = dist * 0.4
             
-            # Left Curve
-            a1_c1 = (a1[0] + n_A[0]*push, a1[1] + n_A[1]*push)
-            b1_c2 = (left_end[0] + n_B[0]*push, left_end[1] + n_B[1]*push)
-            curve_left = get_bezier_curve(a1, a1_c1, b1_c2, left_end)
-            
-            # Right Curve
-            a2_c1 = (a2[0] + n_A[0]*push, a2[1] + n_A[1]*push)
-            b2_c2 = (right_end[0] + n_B[0]*push, right_end[1] + n_B[1]*push)
-            curve_right = get_bezier_curve(a2, a2_c1, b2_c2, right_end)
+            if A["edge"] == B["edge"]:
+                # Same edge connection: Make a structural U-turn / smooth half-bezier
+                dist_outer = math.hypot(a1[0] - left_end[0], a1[1] - left_end[1])
+                dist_inner = math.hypot(a2[0] - right_end[0], a2[1] - right_end[1])
+                
+                # To maintain exactly constant thickness throughout a 180 degree Bezier bend,
+                # the outer curve MUST travel further outward than the inner curve.
+                # Specifically, push_outer - push_inner must equal the line thickness!
+                # Setting push = dist/2 is a good approximation for a half circle.
+                # Left Curve (Outer)
+                push_outer = dist_outer * 0.55
+                a1_c1 = (a1[0] + n_A[0]*push_outer, a1[1] + n_A[1]*push_outer)
+                b1_c2 = (left_end[0] + n_B[0]*push_outer, left_end[1] + n_B[1]*push_outer)
+                curve_left = get_bezier_curve(a1, a1_c1, b1_c2, left_end)
+                
+                # Right Curve (Inner)
+                push_inner = dist_inner * 0.55
+                a2_c1 = (a2[0] + n_A[0]*push_inner, a2[1] + n_A[1]*push_inner)
+                b2_c2 = (right_end[0] + n_B[0]*push_inner, right_end[1] + n_B[1]*push_inner)
+                curve_right = get_bezier_curve(a2, a2_c1, b2_c2, right_end)
+            else:
+                push = dist * 0.4
+                # Left Curve
+                a1_c1 = (a1[0] + n_A[0]*push, a1[1] + n_A[1]*push)
+                b1_c2 = (left_end[0] + n_B[0]*push, left_end[1] + n_B[1]*push)
+                curve_left = get_bezier_curve(a1, a1_c1, b1_c2, left_end)
+                
+                # Right Curve
+                a2_c1 = (a2[0] + n_A[0]*push, a2[1] + n_A[1]*push)
+                b2_c2 = (right_end[0] + n_B[0]*push, right_end[1] + n_B[1]*push)
+                curve_right = get_bezier_curve(a2, a2_c1, b2_c2, right_end)
             
             poly_points = [map_pt(pt) for pt in curve_left]
             poly_points.extend([map_pt(pt) for pt in reversed(curve_right)])
             draw.polygon(poly_points, fill=0)
 
         elif c_type == "tapered_line":
-            # Tapered Line: Smooth log-like transition of thickness.
-            # We can reuse the bezier logic, but the control points just stay exactly on the straight line
-            # connecting the centers, while adjusting the width exponentially or smoothed.
-            # A simple way to get a smooth bone-like taper is to use a bezier curve for the edges 
-            # with control points hugging the straight line but "pinched" towards the thinner end or center.
+            # For a tapered line, we want the edges to bow inward.
+            # Using bezier curves where the control points are pulled towards the centerline.
+            center_start = A["p"]
+            center_end = B["p"]
             
-            # Left Edge Bezier
-            l_c1 = (a1[0] * 0.6 + left_end[0] * 0.4, a1[1] * 0.6 + left_end[1] * 0.4)
-            l_c2 = (a1[0] * 0.4 + left_end[0] * 0.6, a1[1] * 0.4 + left_end[1] * 0.6)
+            mid_center = ((center_start[0] + center_end[0])/2, (center_start[1] + center_end[1])/2)
+            
+            # Pull control points towards the midpoint of the center line (50% pinch factor)
+            pinch = 0.5
+            l_c1 = (a1[0]*(1-pinch) + mid_center[0]*pinch, a1[1]*(1-pinch) + mid_center[1]*pinch)
+            l_c2 = (left_end[0]*(1-pinch) + mid_center[0]*pinch, left_end[1]*(1-pinch) + mid_center[1]*pinch)
             curve_left = get_bezier_curve(a1, l_c1, l_c2, left_end)
             
-            # Right Edge Bezier
-            r_c1 = (a2[0] * 0.6 + right_end[0] * 0.4, a2[1] * 0.6 + right_end[1] * 0.4)
-            r_c2 = (a2[0] * 0.4 + right_end[0] * 0.6, a2[1] * 0.4 + right_end[1] * 0.6)
+            r_c1 = (a2[0]*(1-pinch) + mid_center[0]*pinch, a2[1]*(1-pinch) + mid_center[1]*pinch)
+            r_c2 = (right_end[0]*(1-pinch) + mid_center[0]*pinch, right_end[1]*(1-pinch) + mid_center[1]*pinch)
             curve_right = get_bezier_curve(a2, r_c1, r_c2, right_end)
             
             poly_points = [map_pt(pt) for pt in curve_left]
@@ -186,6 +247,30 @@ def render_microstructure(params, size=(128, 128), out_path="sample.png"):
             if n_A[0] == -n_B[0] and n_A[1] == -n_B[1]:
                 poly = [map_pt(a1), map_pt(left_end), map_pt(right_end), map_pt(a2)]
                 draw.polygon(poly, fill=0)
+            elif A["edge"] == B["edge"]:
+                # Same edge connection: Make a structural U-turn / half-circle
+                dist_A = math.hypot(a1[0] - left_end[0], a1[1] - left_end[1])
+                dist_B = math.hypot(a2[0] - right_end[0], a2[1] - right_end[1])
+                
+                # For a 180 degree semi-circle, kappa is approx 1.333
+                kappa = 1.3333
+                
+                push_A_outer = dist_A / 2
+                push_B_inner = dist_B / 2
+                
+                # Left Curve Arc (Outer)
+                a1_c1 = (a1[0] + n_A[0]*(push_A_outer*kappa), a1[1] + n_A[1]*(push_A_outer*kappa))
+                b1_c2 = (left_end[0] + n_B[0]*(push_A_outer*kappa), left_end[1] + n_B[1]*(push_A_outer*kappa))
+                curve_left = get_bezier_curve(a1, a1_c1, b1_c2, left_end)
+                
+                # Right Curve Arc (Inner)
+                a2_c1 = (a2[0] + n_A[0]*(push_B_inner*kappa), a2[1] + n_A[1]*(push_B_inner*kappa))
+                b2_c2 = (right_end[0] + n_B[0]*(push_B_inner*kappa), right_end[1] + n_B[1]*(push_B_inner*kappa))
+                curve_right = get_bezier_curve(a2, a2_c1, b2_c2, right_end)
+                
+                poly_points = [map_pt(pt) for pt in curve_left]
+                poly_points.extend([map_pt(pt) for pt in reversed(curve_right)])
+                draw.polygon(poly_points, fill=0)
             else:
                 # Calculate intersection of normals to find "corner"
                 push_A = abs(A["p"][0] - B["p"][0]) if n_A[0] != 0 else abs(A["p"][1] - B["p"][1])

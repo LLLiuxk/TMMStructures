@@ -1,0 +1,28 @@
+{
+    "num_samples": 20,
+    "random_seed": 42,
+    "sampling_mode": "grid",
+    "output_dir": "Output/dataset",
+    "node_position_range": [
+        0.1,
+        0.9
+    ],
+    "node_position_step": 0.2,
+    "node_width_range": [
+        0.15,
+        0.30
+    ],
+    "node_width_step": 0.1,
+    "nodes_per_edge_range": [
+        1,
+        1
+    ],
+    "max_node_degree": 2,
+    "sparsity_range": [
+        0.3,
+        0.8
+    ],
+    "allowed_connection_types": [
+        "bezier_curve"
+    ]
+}
