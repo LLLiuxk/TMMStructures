@@ -579,50 +579,30 @@ def test_symmetry(size=20):
 # 8. Main Entry Point
 # ==============================================================================
 
-def process_image(image_path, E0=1.0, nu=0.3, k0=1.0, Emin=1e-9, kmin=1e-9, penal=3.0):
+def process_image(image_path, E0=1.0, nu=0.3, k0=1.0, Emin=1e-9, kmin=1e-9, penal=3.0, silent=False):
     """
     Process a single microstructure image and compute effective properties.
     """
-    name = os.path.basename(image_path)
-    print(f"\n{'='*60}")
-    print(f"Processing: {name}")
-    print(f"{'='*60}")
+    if not silent:
+        name = os.path.basename(image_path)
+        print(f"  Homogenizing: {name}")
 
-    t0 = time.time()
     density = load_and_reconstruct(image_path)
     nely, nelx = density.shape
     vf = np.mean(density)
-    print(f"  Full unit cell size: {nelx} x {nely} ({nelx*nely} elements)")
-    print(f"  Volume fraction: {vf:.4f}")
 
-    t1 = time.time()
     C_eff = homogenize_elastic(nelx, nely, density, E0, Emin, nu, penal)
-    t2 = time.time()
-    print(f"  Elastic homogenization: {t2-t1:.2f}s")
-    print(f"  C_eff =")
-    for row in C_eff:
-        print(f"    [{', '.join(f'{v:12.6e}' for v in row)}]")
-
-    t3 = time.time()
     kappa_eff = homogenize_thermal(nelx, nely, density, k0, kmin, penal)
-    t4 = time.time()
-    print(f"  Thermal homogenization: {t4-t3:.2f}s")
-    print(f"  kappa_eff =")
-    for row in kappa_eff:
-        print(f"    [{', '.join(f'{v:12.6e}' for v in row)}]")
-
-    print(f"  Total time: {t4-t0:.2f}s")
 
     return {
-        'name': name,
         'nelx': nelx,
         'nely': nely,
-        'volume_fraction': vf,
+        'volume_fraction': float(vf),
         'C_eff': C_eff.tolist(),
         'kappa_eff': kappa_eff.tolist(),
-        'C11': C_eff[0, 0], 'C12': C_eff[0, 1], 'C22': C_eff[1, 1],
-        'C66': C_eff[2, 2], 'C16': C_eff[0, 2], 'C26': C_eff[1, 2],
-        'k11': kappa_eff[0, 0], 'k12': kappa_eff[0, 1], 'k22': kappa_eff[1, 1],
+        'C11': float(C_eff[0, 0]), 'C12': float(C_eff[0, 1]), 'C22': float(C_eff[1, 1]),
+        'C66': float(C_eff[2, 2]), 'C16': float(C_eff[0, 2]), 'C26': float(C_eff[1, 2]),
+        'k11': float(kappa_eff[0, 0]), 'k12': float(kappa_eff[0, 1]), 'k22': float(kappa_eff[1, 1]),
     }
 
 

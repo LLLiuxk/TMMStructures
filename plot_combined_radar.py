@@ -3,9 +3,6 @@ import sys
 import numpy as np
 import matplotlib.pyplot as plt
 
-sys.path.append(r'D:\PyProjects\TMMStructures')
-from homogenize import load_and_reconstruct, homogenize_elastic, homogenize_thermal
-
 def compute_polar_properties(C_eff, num_points=360):
     try:
         S = np.linalg.inv(C_eff)
@@ -42,78 +39,50 @@ def compute_thermal_polar_properties(kappa_eff, num_points=360):
     kappa_theta = np.append(kappa_theta, kappa_theta[0])
     return thetas, kappa_theta
 
-def main():
-    folder = r"D:\PyProjects\TMMStructures\Output\sample_structures"
-    if not os.path.exists(folder):
-        return
+def save_radar_chart(C_eff, kappa_eff, title, out_file):
+    thetas_E, E_theta = compute_polar_properties(C_eff)
+    thetas_k, kappa_theta = compute_thermal_polar_properties(kappa_eff)
+    
+    if thetas_E is None: return
         
-    for filename in os.listdir(folder):
-        if filename.endswith(".png") and not "radar" in filename:
-            filepath = os.path.join(folder, filename)
-            print(f"Processing Combined: {filename}")
-            
-            density = load_and_reconstruct(filepath, invert=True)
-            nely, nelx = density.shape
-            
-            C_eff = homogenize_elastic(nelx, nely, density, E0=1.0, Emin=1e-9, nu=0.3, penal=1.0)
-            kappa_eff = homogenize_thermal(nelx, nely, density, k0=1.0, kmin=1e-9, penal=1.0)
-            
-            thetas_E, E_theta = compute_polar_properties(C_eff)
-            thetas_k, kappa_theta = compute_thermal_polar_properties(kappa_eff)
-            
-            if thetas_E is None:
-                continue
-                
-            fig = plt.figure(figsize=(7, 7))
-            
-            # Setup dual axes in polar coordinates
-            ax_E = fig.add_subplot(111, polar=True)
-            
-            # Plot Mechanical Property (E) on ax_E
-            line_E, = ax_E.plot(thetas_E, E_theta, linewidth=2.5, color='royalblue', label=r"Young's Modulus $E(\theta)$")
-            ax_E.fill(thetas_E, E_theta, alpha=0.2, color='royalblue')
-            ax_E.set_ylabel("Young's Modulus E", color='royalblue', labelpad=40, weight='bold')
-            ax_E.tick_params(axis='y', colors='royalblue')
-            
-            # Create a second twin polar axis for Thermal Conductivity (kappa)
-            # Since matplotlib doesn't natively support polar twin axes perfectly with different r-scales sometimes,
-            # Normalizing/Scaling might be needed, or using secondary_y trick on standard plot.
-            # However, for polar plots, standard approach is simply to plot on the same axis if ranges are similar,
-            # or normalized plotting. Let's normalize both to [0, 1] relative to their maximums for best visual comparison
-            # of shape and anisotropy on the same chart, and write the max values in the legend or title.
-            
-            max_E = np.nanmax(E_theta)
-            max_kappa = np.nanmax(kappa_theta)
-            
-            E_norm = E_theta / max_E
-            kappa_norm = kappa_theta / max_kappa
-            
-            ax_E.clear() # Clear and redraw normalized
-            
-            line_E, = ax_E.plot(thetas_E, E_norm, linewidth=2.5, color='royalblue', label=f"Young's Modulus $E(\theta)$\n(Max: {max_E:.3f})")
-            ax_E.fill(thetas_E, E_norm, alpha=0.2, color='royalblue')
-            
-            line_k, = ax_E.plot(thetas_k, kappa_norm, linewidth=2.5, color='crimson', label=f"Thermal Cond. $\kappa(\theta)$\n(Max: {max_kappa:.3f})")
-            ax_E.fill(thetas_k, kappa_norm, alpha=0.15, color='crimson')
-            
-            ax_E.set_title(f"Normalized Combined Radar Chart\n{filename}", pad=20, fontsize=14, weight='bold')
-            ax_E.set_ylim(bottom=0, top=1.1)
-            ax_E.grid(True, linestyle='--', alpha=0.6)
-            
-            # Set grid labels
-            ax_E.set_yticks([0.25, 0.5, 0.75, 1.0])
-            ax_E.set_yticklabels(['25%', '50%', '75%', '100%'], color='dimgray', fontsize=9)
-            ax_E.set_rlabel_position(22.5) 
-            plt.xticks(fontsize=10)
-            
-            # Legend
-            ax_E.legend(loc='lower center', bbox_to_anchor=(0.5, -0.2), ncol=2, fontsize=10, frameon=True)
-            
-            out_file = os.path.join(folder, filename.replace(".png", "_combined_radar.png"))
-            plt.tight_layout()
-            plt.savefig(out_file, dpi=300, bbox_inches='tight')
-            plt.close()
-            print(f"Saved combined radar chart to {out_file}\n")
+    fig = plt.figure(figsize=(7, 7))
+    ax = fig.add_subplot(111, polar=True)
+    
+    max_E = np.nanmax(E_theta)
+    max_kappa = np.nanmax(kappa_theta)
+    
+    E_norm = E_theta / max_E if max_E > 0 else E_theta
+    kappa_norm = kappa_theta / max_kappa if max_kappa > 0 else kappa_theta
+    
+    ax.plot(thetas_E, E_norm, linewidth=2.5, color='royalblue', label=f"Young's Modulus $E(\\theta)$\n(Max: {max_E:.3f})")
+    ax.fill(thetas_E, E_norm, alpha=0.2, color='royalblue')
+    
+    ax.plot(thetas_k, kappa_norm, linewidth=2.5, color='crimson', label=f"Thermal Cond. $\\kappa(\\theta)$\n(Max: {max_kappa:.3f})")
+    ax.fill(thetas_k, kappa_norm, alpha=0.15, color='crimson')
+    
+    ax.set_title(title, pad=20, fontsize=12, weight='bold')
+    ax.set_ylim(bottom=0, top=1.1)
+    ax.set_yticks([0.25, 0.5, 0.75, 1.0])
+    ax.set_yticklabels(['25%', '50%', '75%', '100%'], color='dimgray', fontsize=9)
+    ax.legend(loc='lower center', bbox_to_anchor=(0.5, -0.2), ncol=2, fontsize=9)
+    
+    plt.tight_layout()
+    plt.savefig(out_file, dpi=150, bbox_inches='tight')
+    plt.close()
 
 if __name__ == "__main__":
-    main()
+    # Backwards compatibility for the original script logic
+    import glob
+    from homogenize import load_and_reconstruct, homogenize_elastic, homogenize_thermal
+    
+    folder = r"D:\PyProjects\TMMStructures\Output\sample_structures"
+    if os.path.exists(folder):
+        for filename in os.listdir(folder):
+            if filename.endswith(".png") and not "radar" in filename:
+                filepath = os.path.join(folder, filename)
+                density = load_and_reconstruct(filepath, invert=True)
+                nely, nelx = density.shape
+                C_eff = homogenize_elastic(nelx, nely, density, penal=1.0)
+                kappa_eff = homogenize_thermal(nelx, nely, density, penal=1.0)
+                out_file = os.path.join(folder, filename.replace(".png", "_combined_radar.png"))
+                save_radar_chart(C_eff, kappa_eff, f"Combined Radar: {filename}", out_file)

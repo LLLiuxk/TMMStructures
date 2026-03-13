@@ -19,7 +19,10 @@ import os
 import json
 import random
 import numpy as np
+import itertools
 from generate_microstructure import render_microstructure
+from homogenize import process_image
+from plot_combined_radar import save_radar_chart
 
 EDGES = ["E1", "E2", "E3", "E4"]
 
@@ -111,7 +114,7 @@ def is_connected_and_valid(adj, n, max_degree):
     return len(visited) == n
 
 
-def sample_adjacency(n, config, max_attempts=50000):
+def sample_adjacency(n, config, max_attempts=50000, rng=random):
     """
     Sample a random valid n×n symmetric adjacency matrix satisfying:
       - degree in [1, max_degree] for every node
@@ -123,10 +126,10 @@ def sample_adjacency(n, config, max_attempts=50000):
     
     for _ in range(max_attempts):
         adj = [[0] * n for _ in range(n)]
-        p = random.uniform(sp_min, sp_max)
+        p = rng.uniform(sp_min, sp_max)
         for i in range(n):
             for j in range(i + 1, n):
-                if random.random() < p:
+                if rng.random() < p:
                     adj[i][j] = 1
                     adj[j][i] = 1
         if is_connected_and_valid(adj, n, max_degree):
@@ -150,15 +153,38 @@ def get_grid_range(min_val, max_val, step):
         curr += step
     return vals
 
+def enumerate_all_topologies(n, config):
+    """
+    Exhaustively enumerates all possible valid symmetric adjacency matrices for n nodes.
+    Filters by connectivity and max degree constraints.
+    """
+    max_degree = config.get("max_node_degree", 2)
+    # Get all possible undirected edges (i, j) where i < j
+    possible_edges = list(itertools.combinations(range(n), 2))
+    num_possible = len(possible_edges)
+    
+    valid_adjs = []
+    # Iterate through all 2^num_possible combinations
+    # For n=4, 2^6=64; n=5, 2^10=1024; n=6, 2^15=32768 (still feasible)
+    for combo in itertools.product([0, 1], repeat=num_possible):
+        adj = [[0] * n for _ in range(n)]
+        for is_present, (u, v) in zip(combo, possible_edges):
+            if is_present:
+                adj[u][v] = adj[v][u] = 1
+        
+        if is_connected_and_valid(adj, n, max_degree):
+            valid_adjs.append(adj)
+    return valid_adjs
+
 def generate_grid_schemas(config):
     """
-    Generator that evaluates deterministic gridding properties and yields
-    every combination of grid position and grid width combinations via Cartesian product.
-    Iterates over the nodes_per_edge range as well.
-    Fixes a specific random topology graph for each npe count first.
+    Pure deterministic generator. Performs a full Cartesian product over:
+    1. Node count combinations (npe_combo)
+    2. Valid topological skeletons (adjacency matrices)
+    3. Connection types for each edge
+    4. Node positions and widths
     """
     npe_min, npe_max = config.get("nodes_per_edge_range", [1, 1])
-    
     pos_min, pos_max = config.get("node_position_range", [0.1, 0.9])
     pos_step = config.get("node_position_step", 0.4)
     pos_pool = get_grid_range(pos_min, pos_max, pos_step)
@@ -172,61 +198,72 @@ def generate_grid_schemas(config):
 
     npe_pool = range(npe_min, npe_max + 1)
     
-    # Iterate over all possible combinations of node counts for the 4 edges
+    # 1. Iterate Node Counts
     for npe_combo in itertools.product(npe_pool, repeat=4):
         total_nodes = sum(npe_combo)
-        
-        # Guard against zero total nodes
-        if total_nodes == 0:
-            continue
+        if total_nodes == 0: continue
             
-        # Generate one valid topology to map parameters onto for this npe combination
-        base_adj = None
-        for _ in range(5000):
-            adj = sample_adjacency(total_nodes, config)
-            if adj is not None:
-                base_adj = adj
-                break
-                
-        if base_adj is None:
-            print(f"Warning: Failed to generate base adjacency for grid search with npe_combo={npe_combo}")
-            continue
-
-        # Generate edge-by-edge node index lists
-        node_list = []
-        for edge_idx, edge in enumerate(EDGES):
+        # 2. Iterate ALL Valid Topologies
+        all_adjs = enumerate_all_topologies(total_nodes, config)
+        
+        # Prepare node index mapping to edges
+        node_edge_list = []
+        for edge_idx, edge_name in enumerate(EDGES):
             for _ in range(npe_combo[edge_idx]):
-                node_list.append(edge)
+                node_edge_list.append(edge_name)
+
+        for adj in all_adjs:
+            # Identify active connections (edges) in the current adjacency matrix
+            active_edges = []
+            for i in range(total_nodes):
+                for j in range(i + 1, total_nodes):
+                    if adj[i][j]:
+                        active_edges.append((i, j))
+            
+            num_conns = len(active_edges)
+
+            # 3. Iterate ALL combinations of connection types for these edges
+            for type_combo in itertools.product(allowed_types, repeat=num_conns):
                 
-        # Iterate through all combinations of positions and widths for ALL nodes
-        # For n nodes, we need n pos values and n width values
-        for pos_combo in itertools.product(pos_pool, repeat=total_nodes):
-            for width_combo in itertools.product(width_pool, repeat=total_nodes):
-                
-                nodes_dict = {edge: [] for edge in EDGES}
-                
-                # Populate node dict
-                for i in range(total_nodes):
-                    edge = node_list[i]
-                    nodes_dict[edge].append([pos_combo[i], width_combo[i]])
+                # 4. Iterate ALL Position combinations
+                for pos_combo in itertools.product(pos_pool, repeat=total_nodes):
                     
-                # Build connections
-                connections = []
-                for i in range(total_nodes):
-                    for j in range(i + 1, total_nodes):
-                        if base_adj[i][j]:
+                    # 5. Iterate ALL Width combinations
+                    for width_combo in itertools.product(width_pool, repeat=total_nodes):
+                        
+                        nodes_dict = {e: [] for e in EDGES}
+                        # Temp storage to resolve indices in connections
+                        node_info = [] # list of (edge, pos, width)
+                        
+                        for i in range(total_nodes):
+                            edge_name = node_edge_list[i]
+                            p_val = pos_combo[i]
+                            w_val = width_combo[i]
+                            nodes_dict[edge_name].append([p_val, w_val])
+                            node_info.append((edge_name, p_val, w_val))
+
+                        # Build connections
+                        connections = []
+                        for conn_idx, (u, v) in enumerate(active_edges):
+                            # Find index in the specific edge list for rendering
+                            u_edge, u_p, u_w = node_info[u]
+                            v_edge, v_p, v_w = node_info[v]
+                            
+                            u_idx = nodes_dict[u_edge].index([u_p, u_w])
+                            v_idx = nodes_dict[v_edge].index([v_p, v_w])
+                            
                             connections.append({
-                                "start": [node_list[i], nodes_dict[node_list[i]].index([pos_combo[i], width_combo[i]])],
-                                "end":   [node_list[j], nodes_dict[node_list[j]].index([pos_combo[j], width_combo[j]])],
-                                "type":  random.choice(allowed_types)  # Alternatively, grid over connection types too
+                                "start": [u_edge, u_idx],
+                                "end":   [v_edge, v_idx],
+                                "type":  type_combo[conn_idx]
                             })
-                
-                yield {
-                    "nodes": nodes_dict,
-                    "node_list": [[e, i] for e, i in zip(node_list, range(total_nodes))],
-                    "matrix": base_adj,
-                    "connections": connections
-                }
+                        
+                        yield {
+                            "nodes": nodes_dict,
+                            "node_list": [[e, i] for e, i in zip(node_edge_list, range(total_nodes))],
+                            "matrix": adj,
+                            "connections": connections
+                        }
 
 def generate_random_schema(config, seed=None):
     """
@@ -294,6 +331,11 @@ def build_dataset(config):
     print(f"{'=' * 60}")
     
     base_seed = config.get("random_seed", None)
+    if base_seed is not None:
+        random.seed(base_seed)
+        np.random.seed(base_seed)
+        print(f" Global random seed set to: {base_seed}")
+
     sampling_mode = config.get("sampling_mode", "random")
     
     # Set up generator based on mode
@@ -307,41 +349,56 @@ def build_dataset(config):
     else:
         # Dummy generator wrapper for random mode
         def random_schema_generator():
+            i = 0
             while True:
-                yield generate_random_schema(config, seed=base_seed)
+                # For random mode, we optionally advance the seed each time to ensure uniqueness 
+                # but still maintain global reproducibility from the base_seed
+                seed_val = base_seed + i if base_seed is not None else None
+                yield generate_random_schema(config, seed=seed_val)
+                i += 1
         schema_generator = random_schema_generator()
     
     for i in range(num_samples):
         base_name = f"sample_{i:04d}"
         img_path = os.path.join(out_dir, "images", f"{base_name}.png")
+        radar_path = os.path.join(out_dir, "images", f"{base_name}_radar.png")
         
         try:
-            if sampling_mode == "random":
-                # For random mode, we optionally advance the seed each time
-                seed_val = base_seed + i if base_seed is not None else None
-                schema = generate_random_schema(config, seed=seed_val)
-            else:
-                # For grid mode, just take the next from generator
-                schema = next(schema_generator)
+            # Get next schema from our generator
+            schema = next(schema_generator)
             
+            # 1. Render Image
             render_schema = {
                 "nodes": schema["nodes"],
                 "connections": schema["connections"]
             }
             render_microstructure(render_schema, size=(128, 128), out_path=img_path)
             
+            # 2. Homogenize (Calculate Mechanical and Thermal properties)
+            props = process_image(img_path, silent=True)
+            
+            # 3. Generate Radar Plot
+            save_radar_chart(
+                np.array(props['C_eff']), 
+                np.array(props['kappa_eff']), 
+                f"Properties: {base_name}", 
+                radar_path
+            )
+            
             record = {
                 "id": base_name,
                 "image_path": img_path,
+                "radar_path": radar_path,
                 "schema": schema,
+                "properties": props
             }
             dataset_records.append(record)
             
             if (i + 1) % 50 == 0 or i == 0:
                 n_nodes = len(schema["node_list"])
-                n_conns = len(schema["connections"])
+                vf = props['volume_fraction']
                 print(f"  [{i+1:4d}/{num_samples}] {base_name}  "
-                      f"nodes={n_nodes}  connections={n_conns}")
+                      f"nodes={n_nodes}  vf={vf:.3f}  C11={props['C11']:.3f}")
                 
         except StopIteration:
             print(f"\nGrid search exhausted all permutations after {i} samples.")
