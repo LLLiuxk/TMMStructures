@@ -4,8 +4,15 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 def compute_polar_properties(C_eff, num_points=360):
+    """
+    Computes directional Young's Modulus E(theta) from effective stiffness matrix.
+    Adds a tiny regularization to ensure stability for non-connected structures.
+    """
+    # 1. Add tiny regularization to prevent singular matrix inversion for non-connected designs
+    C_stable = C_eff + np.eye(3) * 1e-9
+    
     try:
-        S = np.linalg.inv(C_eff)
+        S = np.linalg.inv(C_stable)
     except np.linalg.LinAlgError:
         return None, None
         
@@ -18,14 +25,22 @@ def compute_polar_properties(C_eff, num_points=360):
     
     for i, theta in enumerate(thetas):
         c, s = np.cos(theta), np.sin(theta)
+        # Standard 2D compliance rotation for E(theta)
+        # inv_E = S11*c^4 + S22*s^4 + (2*S12 + S66)*c^2*s^2 + 2*S16*c^3*s + 2*S26*c*s^3
         inv_E = S11 * c**4 + S22 * s**4 + (2*S12 + S66) * c**2 * s**2 + 2*S16 * c**3 * s + 2*S26 * c * s**3
-        E_theta[i] = 1.0 / inv_E if inv_E > 0 else np.nan
+        
+        # Clamp inv_E to avoid division by zero or negative values due to numerical noise
+        E_theta[i] = 1.0 / max(inv_E, 1e-12)
             
+    # Close the loop
     thetas = np.append(thetas, thetas[0])
     E_theta = np.append(E_theta, E_theta[0])
     return thetas, E_theta
 
 def compute_thermal_polar_properties(kappa_eff, num_points=360):
+    """
+    Computes directional Thermal Conductivity kappa(theta).
+    """
     k11, k22, k12 = kappa_eff[0, 0], kappa_eff[1, 1], kappa_eff[0, 1]
     
     thetas = np.linspace(0, 2*np.pi, num_points)
@@ -33,56 +48,59 @@ def compute_thermal_polar_properties(kappa_eff, num_points=360):
     
     for i, theta in enumerate(thetas):
         c, s = np.cos(theta), np.sin(theta)
-        kappa_theta[i] = k11 * c**2 + k22 * s**2 + 2 * k12 * c * s
+        # Kappa(theta) = k_ij * n_i * n_j
+        kappa_val = k11 * c**2 + k22 * s**2 + 2 * k12 * c * s
+        kappa_theta[i] = max(kappa_val, 1e-12)
             
     thetas = np.append(thetas, thetas[0])
     kappa_theta = np.append(kappa_theta, kappa_theta[0])
     return thetas, kappa_theta
 
 def save_radar_chart(C_eff, kappa_eff, title, out_file):
+    """
+    Renders a dual-subplot radar chart for Mechanical and Thermal properties.
+    """
     thetas_E, E_theta = compute_polar_properties(C_eff)
     thetas_k, kappa_theta = compute_thermal_polar_properties(kappa_eff)
     
-    if thetas_E is None: return
+    if thetas_E is None: 
+        print(f"Warning: Skipping radar plot for {title} due to singular matrix.")
+        return
         
-    fig = plt.figure(figsize=(7, 7))
-    ax = fig.add_subplot(111, polar=True)
+    # Use 1x2 subplot layout for separation
+    fig = plt.figure(figsize=(12, 6))
     
+    # --- Subplot 1: Mechanical (Young's Modulus) ---
+    ax1 = fig.add_subplot(121, polar=True)
     max_E = np.nanmax(E_theta)
-    max_kappa = np.nanmax(kappa_theta)
-    
+    # Use min E_theta/max_E to ensure a visible shape even for extreme anisotropy
     E_norm = E_theta / max_E if max_E > 0 else E_theta
+    
+    ax1.plot(thetas_E, E_norm, linewidth=2, color='royalblue')
+    ax1.fill(thetas_E, E_norm, alpha=0.3, color='royalblue')
+    ax1.set_title(f"Young's Modulus $E(\\theta)$\nMax: {max_E:.3e}", fontsize=11, pad=15)
+    ax1.set_yticks([0.25, 0.5, 0.75, 1.0])
+    ax1.set_yticklabels(['', '50%', '', '100%'], fontsize=8)
+
+    # --- Subplot 2: Thermal (Conductivity) ---
+    ax2 = fig.add_subplot(122, polar=True)
+    max_kappa = np.nanmax(kappa_theta)
     kappa_norm = kappa_theta / max_kappa if max_kappa > 0 else kappa_theta
     
-    ax.plot(thetas_E, E_norm, linewidth=2.5, color='royalblue', label=f"Young's Modulus $E(\\theta)$\n(Max: {max_E:.3f})")
-    ax.fill(thetas_E, E_norm, alpha=0.2, color='royalblue')
-    
-    ax.plot(thetas_k, kappa_norm, linewidth=2.5, color='crimson', label=f"Thermal Cond. $\\kappa(\\theta)$\n(Max: {max_kappa:.3f})")
-    ax.fill(thetas_k, kappa_norm, alpha=0.15, color='crimson')
-    
-    ax.set_title(title, pad=20, fontsize=12, weight='bold')
-    ax.set_ylim(bottom=0, top=1.1)
-    ax.set_yticks([0.25, 0.5, 0.75, 1.0])
-    ax.set_yticklabels(['25%', '50%', '75%', '100%'], color='dimgray', fontsize=9)
-    ax.legend(loc='lower center', bbox_to_anchor=(0.5, -0.2), ncol=2, fontsize=9)
+    ax2.plot(thetas_k, kappa_norm, linewidth=2, color='crimson')
+    ax2.fill(thetas_k, kappa_norm, alpha=0.3, color='crimson')
+    ax2.set_title(f"Thermal Cond. $\\kappa(\\theta)$\nMax: {max_kappa:.3e}", fontsize=11, pad=15)
+    ax2.set_yticks([0.25, 0.5, 0.75, 1.0])
+    ax2.set_yticklabels(['', '50%', '', '100%'], fontsize=8)
+
+    fig.suptitle(title, fontsize=14, weight='bold', y=1.05)
     
     plt.tight_layout()
     plt.savefig(out_file, dpi=150, bbox_inches='tight')
     plt.close()
 
 if __name__ == "__main__":
-    # Backwards compatibility for the original script logic
+    # Test script for manual verification
     import glob
-    from homogenize import load_and_reconstruct, homogenize_elastic, homogenize_thermal
-    
-    folder = r"D:\PyProjects\TMMStructures\Output\sample_structures"
-    if os.path.exists(folder):
-        for filename in os.listdir(folder):
-            if filename.endswith(".png") and not "radar" in filename:
-                filepath = os.path.join(folder, filename)
-                density = load_and_reconstruct(filepath, invert=True)
-                nely, nelx = density.shape
-                C_eff = homogenize_elastic(nelx, nely, density, penal=1.0)
-                kappa_eff = homogenize_thermal(nelx, nely, density, penal=1.0)
-                out_file = os.path.join(folder, filename.replace(".png", "_combined_radar.png"))
-                save_radar_chart(C_eff, kappa_eff, f"Combined Radar: {filename}", out_file)
+    # (Assuming homogenize structure logic remains the same)
+    print("This script is now a utility for generate_dataset.py. Use reproduce.bat to test individual samples.")

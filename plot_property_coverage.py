@@ -32,7 +32,14 @@ def calculate_hs_bounds(vf_range, E0=1.0, nu0=0.3):
     return np.array(K_hs), np.array(G_hs)
 
 def main():
-    json_path = "Output/dataset/dataset_schema.json"
+    config_path = "dataset_config.json"
+    out_dir = "Output/dataset"
+    if os.path.exists(config_path):
+        with open(config_path, "r") as f:
+            config = json.load(f)
+            out_dir = config.get("output_dir", out_dir)
+            
+    json_path = os.path.join(out_dir, "dataset_schema.json")
     if not os.path.exists(json_path):
         print("Dataset schema not found.")
         return
@@ -100,7 +107,7 @@ def main():
     ax2.legend()
 
     plt.tight_layout()
-    out_path = "Output/dataset/property_coverage_summary.png"
+    out_path = os.path.join(out_dir, "property_coverage_summary.png")
     plt.savefig(out_path, dpi=300)
     print(f"Property coverage plot saved to {out_path}")
     plt.show()
