@@ -73,25 +73,46 @@ def save_radar_chart(C_eff, kappa_eff, title, out_file):
     # --- Subplot 1: Mechanical (Young's Modulus) ---
     ax1 = fig.add_subplot(121, polar=True)
     max_E = np.nanmax(E_theta)
-    # Use min E_theta/max_E to ensure a visible shape even for extreme anisotropy
-    E_norm = E_theta / max_E if max_E > 0 else E_theta
+    
+    if max_E > 1e-10:
+        # Use log scale normalization to handle extreme anisotropy
+        E_log = np.log10(np.maximum(E_theta, 1e-12))
+        max_log = np.max(E_log)
+        min_log = np.min(E_log)
+        # Scale to [0.1, 1.0] so the minimum is still slightly visible (not just a single dot at center)
+        if max_log > min_log:
+            E_norm = (E_log - min_log) / (max_log - min_log) * 0.9 + 0.1
+        else:
+            E_norm = np.ones_like(E_theta)
+    else:
+        E_norm = E_theta
     
     ax1.plot(thetas_E, E_norm, linewidth=2, color='royalblue')
     ax1.fill(thetas_E, E_norm, alpha=0.3, color='royalblue')
     ax1.set_title(f"Young's Modulus $E(\\theta)$\nMax: {max_E:.3e}", fontsize=11, pad=15)
-    ax1.set_yticks([0.25, 0.5, 0.75, 1.0])
-    ax1.set_yticklabels(['', '50%', '', '100%'], fontsize=8)
+    ax1.set_yticks([0.1, 0.55, 1.0])
+    ax1.set_yticklabels(['min', 'log-mid', 'max'], fontsize=8)
 
     # --- Subplot 2: Thermal (Conductivity) ---
     ax2 = fig.add_subplot(122, polar=True)
     max_kappa = np.nanmax(kappa_theta)
-    kappa_norm = kappa_theta / max_kappa if max_kappa > 0 else kappa_theta
+    
+    if max_kappa > 1e-10:
+        k_log = np.log10(np.maximum(kappa_theta, 1e-12))
+        max_log_k = np.max(k_log)
+        min_log_k = np.min(k_log)
+        if max_log_k > min_log_k:
+            kappa_norm = (k_log - min_log_k) / (max_log_k - min_log_k) * 0.9 + 0.1
+        else:
+            kappa_norm = np.ones_like(kappa_theta)
+    else:
+        kappa_norm = kappa_theta
     
     ax2.plot(thetas_k, kappa_norm, linewidth=2, color='crimson')
     ax2.fill(thetas_k, kappa_norm, alpha=0.3, color='crimson')
     ax2.set_title(f"Thermal Cond. $\\kappa(\\theta)$\nMax: {max_kappa:.3e}", fontsize=11, pad=15)
-    ax2.set_yticks([0.25, 0.5, 0.75, 1.0])
-    ax2.set_yticklabels(['', '50%', '', '100%'], fontsize=8)
+    ax2.set_yticks([0.1, 0.55, 1.0])
+    ax2.set_yticklabels(['min', 'log-mid', 'max'], fontsize=8)
 
     fig.suptitle(title, fontsize=14, weight='bold', y=1.05)
     

@@ -34,26 +34,30 @@ import time
 
 def load_and_reconstruct(image_path, invert=True):
     """
-    Load a full binary PNG image representing the complete unit cell.
-    (No longer mirrors 1/4 unit cells as per V2 generator).
-
+    Load a quarter binary PNG image and reconstruct the full periodic unit cell
+    via 4-fold mirror symmetry.
+    
     Args:
-        image_path: path to the PNG image
+        image_path: path to the PNG image (128x128 quarter cell)
         invert: if True (default), black pixels = solid, white pixels = void.
                 if False, white pixels = solid, black pixels = void.
 
     Returns:
-        density: 2D numpy array (nely x nelx) with 1.0=solid, 0.0=void
+        density: 2D numpy array (256x256) with 1.0=solid, 0.0=void
     """
     img = Image.open(image_path).convert('L')
-    full = np.array(img, dtype=np.float64) / 255.0
+    quarter = np.array(img, dtype=np.float64) / 255.0
 
     if invert:
         # Black = solid (1.0), White = void (0.0)
-        full = (full < 0.5).astype(np.float64)
+        quarter = (quarter < 0.5).astype(np.float64)
     else:
         # White = solid (1.0), Black = void (0.0)
-        full = (full > 0.5).astype(np.float64)
+        quarter = (quarter > 0.5).astype(np.float64)
+
+    # Reconstruct full 2x2 unit cell via mirror symmetry
+    top_half = np.hstack((quarter, np.fliplr(quarter)))
+    full = np.vstack((top_half, np.flipud(top_half)))
 
     return full
 
