@@ -1,8 +1,8 @@
 {
-    "num_samples": 25000,
-    "random_seed": 42,
+    "num_samples": 50000,
+    "random_seed": 2026,
     "sampling_mode": "random",
-    "output_dir": "Output/dataset/batch_1",
+    "output_dir": "Output/dataset/batch_2",
     "node_position_range": [
         0.1,
         0.9
@@ -14,8 +14,8 @@
     ],
     "node_width_step": 0.02,
     "nodes_per_edge_range": [
-        1,
-        2
+        3,
+        4
     ],
     "max_node_degree": 4,
     "sparsity_range": [

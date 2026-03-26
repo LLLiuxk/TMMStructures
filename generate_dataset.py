@@ -313,7 +313,7 @@ def generate_random_schema(config, seed=None):
 # 3. Dataset Builder
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def build_dataset(config):
+def build_dataset(config, offset=0):
     out_dir = config.get("output_dir", "Output/dataset")
     num_samples = config.get("num_samples", 10)
     
@@ -359,7 +359,8 @@ def build_dataset(config):
         schema_generator = random_schema_generator()
     
     for i in range(num_samples):
-        base_name = f"sample_{i:04d}"
+        actual_id = offset + i
+        base_name = f"sample_{actual_id:05d}"
         img_path = os.path.join(out_dir, "images", f"{base_name}.png")
         radar_path = os.path.join(out_dir, "images", f"{base_name}_radar.png")
         
@@ -414,6 +415,13 @@ def build_dataset(config):
     db_path = os.path.join(out_dir, "dataset_schema.json")
     with open(db_path, "w") as f:
         json.dump(dataset_records, f, indent=2)
+        
+    try:
+        from plot_property_coverage import generate_coverage_plot
+        print("\nGenerating property coverage summary plot...")
+        generate_coverage_plot(out_dir, show_plot=False)
+    except Exception as e:
+        print(f"Warning: Failed to generate property coverage plot: {e}")
     
     print(f"\n{'=' * 60}")
     print(f" Done!  Successful: {len(dataset_records)}/{num_samples}  Failed: {failed}")
@@ -455,5 +463,16 @@ def get_or_create_config(config_path="dataset_config.json"):
 
 
 if __name__ == "__main__":
-    config = get_or_create_config()
-    build_dataset(config)
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-c", "--config", default="dataset_config.json", help="Path to config file")
+    parser.add_argument("--offset", type=int, default=0, help="Starting index ID for generated samples (useful for split-PC generation)")
+    parser.add_argument("--num-samples", type=int, default=None, help="Override number of samples to generate")
+    args = parser.parse_args()
+
+    # Apply configuration and overrides
+    cfg = get_or_create_config(args.config)
+    if args.num_samples is not None:
+        cfg["num_samples"] = args.num_samples
+        
+    build_dataset(cfg, offset=args.offset)

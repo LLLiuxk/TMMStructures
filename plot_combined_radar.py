@@ -80,7 +80,8 @@ def save_radar_chart(C_eff, kappa_eff, title, out_file):
         max_log = np.max(E_log)
         min_log = np.min(E_log)
         # Scale to [0.1, 1.0] so the minimum is still slightly visible (not just a single dot at center)
-        if max_log > min_log:
+        # Apply a tolerance threshold to avoid amplifying floating point noise for isotropic materials
+        if max_log - min_log > 1e-6:
             E_norm = (E_log - min_log) / (max_log - min_log) * 0.9 + 0.1
         else:
             E_norm = np.ones_like(E_theta)
@@ -101,7 +102,7 @@ def save_radar_chart(C_eff, kappa_eff, title, out_file):
         k_log = np.log10(np.maximum(kappa_theta, 1e-12))
         max_log_k = np.max(k_log)
         min_log_k = np.min(k_log)
-        if max_log_k > min_log_k:
+        if max_log_k - min_log_k > 1e-6:
             kappa_norm = (k_log - min_log_k) / (max_log_k - min_log_k) * 0.9 + 0.1
         else:
             kappa_norm = np.ones_like(kappa_theta)
