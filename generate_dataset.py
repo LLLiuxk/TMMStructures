@@ -26,6 +26,52 @@ from plot_combined_radar import save_radar_chart
 
 EDGES = ["E1", "E2", "E3", "E4"]
 
+
+class CompactJSONEncoder(json.JSONEncoder):
+    """Custom JSON encoder that keeps short lists (e.g. matrix rows) on a single line."""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._indent_level = 0
+
+    def encode(self, o):
+        return self._encode(o, self._indent_level)
+
+    def _encode(self, o, indent_level):
+        indent_str = "  " * indent_level
+        child_indent = "  " * (indent_level + 1)
+
+        if isinstance(o, dict):
+            if not o:
+                return "{}"
+            items = []
+            for k, v in o.items():
+                val = self._encode(v, indent_level + 1)
+                items.append(f"{child_indent}{json.dumps(k)}: {val}")
+            return "{\n" + ",\n".join(items) + "\n" + indent_str + "}"
+
+        if isinstance(o, list):
+            if not o:
+                return "[]"
+            # If all elements are simple scalars (numbers, strings, bools, None), put on one line
+            if all(isinstance(x, (int, float, bool, type(None), str)) for x in o):
+                return "[" + ", ".join(json.dumps(x) for x in o) + "]"
+            # If this is a list-of-lists where inner lists are all simple (e.g. matrix), one row per line
+            if all(isinstance(x, list) and all(isinstance(y, (int, float, bool, type(None))) for y in x) for x in o):
+                rows = ["[" + ", ".join(json.dumps(y) for y in row) + "]" for row in o]
+                return "[\n" + ",\n".join(child_indent + r for r in rows) + "\n" + indent_str + "]"
+            # Otherwise use multi-line format
+            items = []
+            for item in o:
+                items.append(child_indent + self._encode(item, indent_level + 1))
+            return "[\n" + ",\n".join(items) + "\n" + indent_str + "]"
+
+        return json.dumps(o)
+
+
+def dump_compact_json(data, f):
+    """Write data to file using compact JSON formatting."""
+    f.write(CompactJSONEncoder().encode(data))
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # 1. Topology Generation
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -313,15 +359,30 @@ def generate_random_schema(config, seed=None):
 # 3. Dataset Builder
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def build_dataset(config, offset=0):
+def build_dataset(config, offset=0, fast_mode=False, resume=True):
     out_dir = config.get("output_dir", "Output/dataset")
     num_samples = config.get("num_samples", 10)
     
     os.makedirs(out_dir, exist_ok=True)
     os.makedirs(os.path.join(out_dir, "images"), exist_ok=True)
     
+    db_path = os.path.join(out_dir, "dataset_schema.json")
     dataset_records = []
+    
+    # Checkpoint / Resume logic
+    existing_ids = set()
+    if resume and os.path.exists(db_path):
+        try:
+            with open(db_path, "r") as f:
+                dataset_records = json.load(f)
+            print(f"Loaded existing database with {len(dataset_records)} records from {db_path}")
+            # Collect already generated IDs
+            existing_ids = {rec["id"] for rec in dataset_records}
+        except json.JSONDecodeError:
+            print(f"Warning: Failed to parse existing {db_path}. Starting fresh.")
+    
     failed = 0
+    skipped = 0
     
     print(f"{'=' * 60}")
     print(f" TMMStructures - Generating {num_samples} microstructures")
@@ -329,6 +390,8 @@ def build_dataset(config, offset=0):
     print(f" Config: nodes_per_edge={config.get('nodes_per_edge_range', [1,1])}, "
           f"max_degree={config.get('max_node_degree', 2)}")
     print(f" Offset: {offset}  (sample IDs: {offset} ~ {offset + num_samples - 1})")
+    print(f" Compute: {'SKIP (Fast Mode)' if fast_mode else 'ON (FEM & Radar)'}")
+    print(f" Resume:  {'ON' if resume else 'OFF'}")
     print(f"{'=' * 60}")
     
     base_seed = config.get("random_seed", None)
@@ -362,6 +425,21 @@ def build_dataset(config, offset=0):
     for i in range(num_samples):
         actual_id = offset + i
         base_name = f"sample_{actual_id:05d}"
+        
+        # Check if we should skip: BOTH json record AND image file must exist
+        img_path_check = os.path.join(out_dir, "images", f"{base_name}.png")
+        if resume and base_name in existing_ids and os.path.exists(img_path_check):
+            skipped += 1
+            if (i + 1) % 50 == 0 or i == 0:
+                print(f"  [{i+1:4d}/{num_samples}] {base_name}  ...skipped (already exists)")
+            
+            # We STILL MUST advance the generator to keep sequence aligned!
+            try:
+                next(schema_generator)
+            except StopIteration:
+                pass
+            continue
+            
         img_path = os.path.join(out_dir, "images", f"{base_name}.png")
         radar_path = os.path.join(out_dir, "images", f"{base_name}_radar.png")
         
@@ -376,21 +454,24 @@ def build_dataset(config, offset=0):
             }
             render_microstructure(render_schema, size=(128, 128), out_path=img_path)
             
-            # 2. Homogenize (Calculate Mechanical and Thermal properties)
-            props = process_image(img_path, silent=True)
-            
-            # 3. Generate Radar Plot
-            save_radar_chart(
-                np.array(props['C_eff']), 
-                np.array(props['kappa_eff']), 
-                f"Properties: {base_name}", 
-                radar_path
-            )
+            # 2. & 3. Homogenize and Radar Plot (Conditional)
+            props = {}
+            if not fast_mode:
+                # Calculate Mechanical and Thermal properties
+                props = process_image(img_path, silent=True)
+                
+                # Generate Radar Plot
+                save_radar_chart(
+                    np.array(props['C_eff']), 
+                    np.array(props['kappa_eff']), 
+                    f"Properties: {base_name}", 
+                    radar_path
+                )
             
             record = {
                 "id": base_name,
                 "image_path": img_path,
-                "radar_path": radar_path,
+                "radar_path": radar_path if not fast_mode else "",
                 "schema": schema,
                 "properties": props
             }
@@ -398,9 +479,19 @@ def build_dataset(config, offset=0):
             
             if (i + 1) % 50 == 0 or i == 0:
                 n_nodes = len(schema["node_list"])
-                vf = props['volume_fraction']
-                print(f"  [{i+1:4d}/{num_samples}] {base_name}  "
-                      f"nodes={n_nodes}  vf={vf:.3f}  C11={props['C11']:.3f}")
+                if fast_mode:
+                    print(f"  [{i+1:4d}/{num_samples}] {base_name}  "
+                          f"nodes={n_nodes}  [Fast Mode: Compute Skipped]")
+                else:
+                    vf = props.get('volume_fraction', 0.0)
+                    c11 = props.get('C11', 0.0)
+                    print(f"  [{i+1:4d}/{num_samples}] {base_name}  "
+                          f"nodes={n_nodes}  vf={vf:.3f}  C11={c11:.3e}")
+                
+            # Periodically save the database to prevent data loss
+            if (i + 1) % 100 == 0:
+                with open(db_path, "w") as f:
+                    dump_compact_json(dataset_records, f)
                 
         except StopIteration:
             print(f"\nGrid search exhausted all permutations after {i} samples.")
@@ -413,9 +504,9 @@ def build_dataset(config, offset=0):
                 break
             continue
     
-    db_path = os.path.join(out_dir, "dataset_schema.json")
+    # Final save
     with open(db_path, "w") as f:
-        json.dump(dataset_records, f, indent=2)
+        dump_compact_json(dataset_records, f)
         
     try:
         from plot_property_coverage import generate_coverage_plot
@@ -425,7 +516,8 @@ def build_dataset(config, offset=0):
         print(f"Warning: Failed to generate property coverage plot: {e}")
     
     print(f"\n{'=' * 60}")
-    print(f" Done!  Successful: {len(dataset_records)}/{num_samples}  Failed: {failed}")
+    print(f" Done!  Successful: {len(dataset_records) - skipped}/{num_samples}  Skipped: {skipped}  Failed: {failed}")
+    print(f" Total records in database: {len(dataset_records)}")
     print(f" Metadata → {db_path}")
     print(f"{'=' * 60}")
 
@@ -469,6 +561,8 @@ if __name__ == "__main__":
     parser.add_argument("-c", "--config", default="dataset_config.json", help="Path to config file")
     parser.add_argument("--offset", type=int, default=0, help="Starting index ID for generated samples (useful for split-PC generation)")
     parser.add_argument("--num-samples", type=int, default=None, help="Override number of samples to generate")
+    parser.add_argument("--fast", action="store_true", help="Fast mode: skip FEM properties and radar charts (images & schema only)")
+    parser.add_argument("--no-resume", action="store_true", help="Disable checkpointing and start fresh (overwrite existing records)")
     args = parser.parse_args()
 
     # Apply configuration and overrides
@@ -476,4 +570,4 @@ if __name__ == "__main__":
     if args.num_samples is not None:
         cfg["num_samples"] = args.num_samples
         
-    build_dataset(cfg, offset=args.offset)
+    build_dataset(cfg, offset=args.offset, fast_mode=args.fast, resume=not args.no_resume)

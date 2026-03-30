@@ -7,9 +7,10 @@ echo.
 echo Target: 25,000 samples (IDs 00000 to 24999)
 echo Output: Output/dataset/batch_2/
 echo Nodes:  3 to 4 per edge
+echo Mode:   Fast (Skipping Compute phase)
 echo.
 
-python generate_dataset.py --config dataset_config.json --offset 0 --num-samples 25000
+python generate_dataset.py --config dataset_config.json --offset 0 --num-samples 25000 --fast
 
 echo.
 echo ======================================================

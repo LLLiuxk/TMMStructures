@@ -107,7 +107,8 @@ def recompute_dataset(dataset_dir="Output/dataset/batch_1", plot_radars=False, r
     # Check for skipping existing records if requested
     skip_count = 0
     for i, record in enumerate(records):
-        is_processed = "properties" in record and "C11" in record["properties"]
+        # A record is considered processed if it has properties and specifically C11 exists
+        is_processed = "properties" in record and record["properties"] and "C11" in record["properties"]
         has_radar = os.path.exists(record.get("radar_path", "")) if record.get("radar_path") else False
         
         # If skip_existing is True, we only add to task_args if not processed OR radar missing (if plotting enabled)
