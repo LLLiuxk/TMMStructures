@@ -328,13 +328,14 @@ def build_dataset(config, offset=0):
     print(f" Output → {os.path.abspath(out_dir)}")
     print(f" Config: nodes_per_edge={config.get('nodes_per_edge_range', [1,1])}, "
           f"max_degree={config.get('max_node_degree', 2)}")
+    print(f" Offset: {offset}  (sample IDs: {offset} ~ {offset + num_samples - 1})")
     print(f"{'=' * 60}")
     
     base_seed = config.get("random_seed", None)
     if base_seed is not None:
-        random.seed(base_seed)
-        np.random.seed(base_seed)
-        print(f" Global random seed set to: {base_seed}")
+        random.seed(base_seed + offset)
+        np.random.seed(base_seed + offset)
+        print(f" Global random seed set to: {base_seed} + offset {offset} = {base_seed + offset}")
 
     sampling_mode = config.get("sampling_mode", "random")
     
@@ -351,9 +352,9 @@ def build_dataset(config, offset=0):
         def random_schema_generator():
             i = 0
             while True:
-                # For random mode, we optionally advance the seed each time to ensure uniqueness 
-                # but still maintain global reproducibility from the base_seed
-                seed_val = base_seed + i if base_seed is not None else None
+                # For random mode, advance the seed by (offset + i) to ensure
+                # different offsets produce entirely different sample sequences
+                seed_val = base_seed + offset + i if base_seed is not None else None
                 yield generate_random_schema(config, seed=seed_val)
                 i += 1
         schema_generator = random_schema_generator()
