@@ -31,17 +31,61 @@ Emin = 1e-9
 kmin = 1e-9
 penal = 3.0
 
+
+class CompactJSONEncoder(json.JSONEncoder):
+    """Custom JSON encoder that keeps short lists (e.g. matrix rows) on a single line."""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._indent_level = 0
+
+    def encode(self, o):
+        return self._encode(o, self._indent_level)
+
+    def _encode(self, o, indent_level):
+        indent_str = "  " * indent_level
+        child_indent = "  " * (indent_level + 1)
+
+        if isinstance(o, dict):
+            if not o:
+                return "{}"
+            items = []
+            for k, v in o.items():
+                val = self._encode(v, indent_level + 1)
+                items.append(f"{child_indent}{json.dumps(k)}: {val}")
+            return "{\n" + ",\n".join(items) + "\n" + indent_str + "}"
+
+        if isinstance(o, list):
+            if not o:
+                return "[]"
+            if all(isinstance(x, (int, float, bool, type(None), str)) for x in o):
+                return "[" + ", ".join(json.dumps(x) for x in o) + "]"
+            if all(isinstance(x, list) and all(isinstance(y, (int, float, bool, type(None))) for y in x) for x in o):
+                rows = ["[" + ", ".join(json.dumps(y) for y in row) + "]" for row in o]
+                return "[\n" + ",\n".join(child_indent + r for r in rows) + "\n" + indent_str + "]"
+            items = []
+            for item in o:
+                items.append(child_indent + self._encode(item, indent_level + 1))
+            return "[\n" + ",\n".join(items) + "\n" + indent_str + "]"
+
+        return json.dumps(o)
+
+
+def dump_compact_json(data, f):
+    """Write data to file using compact JSON formatting."""
+    f.write(CompactJSONEncoder().encode(data))
+
 def process_single_record(args_list):
     """Worker function for multiprocessing."""
     i, record, args = args_list
     img_path = record.get("image_path", "")
+    sample_id = record.get("id", f"sample_{i:05d}")  # Use record id for filename
     
     if not os.path.exists(img_path):
         return {"error": f"Image missing {img_path}", "index": i, "record": record}
             
     try:
-        # Load and reconstruct (this now correctly applies 4-fold mirroring to 256x256)
-        # For batch_1 images, Black=Solid, so invert=True.
+        # Load and reconstruct (4-fold mirroring to 256x256)
+        # Convention: Black = Solid material, invert=True always
         density = load_and_reconstruct(img_path, invert=True)
         nely, nelx = density.shape
         vf = float(np.mean(density))
@@ -54,15 +98,14 @@ def process_single_record(args_list):
         if args.get("radar_dir"):
             radar_dir = args.get("radar_dir")
         else:
-            # Default to the same directory as the source image
             radar_dir = os.path.dirname(img_path)
             
         os.makedirs(radar_dir, exist_ok=True)
-        out_radar = os.path.join(radar_dir, f"sample_{i:04d}_radar.png")
+        out_radar = os.path.join(radar_dir, f"{sample_id}_radar.png")
         
-        # Optionally regenerate the radar chart (this is slow, ~0.2s per image)
+        # Optionally regenerate the radar chart
         if args.get("plot_radars", False):
-            title = f"Sample {i:04d} (Symm Full Cell)\n$C_{{11}}/C_{{22}}$ = {C_eff[0,0]/max(C_eff[1,1], 1e-12):.1e}"
+            title = f"{sample_id}\n$C_{{11}}/C_{{22}}$ = {C_eff[0,0]/max(C_eff[1,1], 1e-12):.1e}"
             save_radar_chart(C_eff, kappa_eff, title, out_radar)
         
         # Pack results back into record
@@ -159,7 +202,7 @@ def recompute_dataset(dataset_dir="Output/dataset/batch_1", plot_radars=False, r
             # Auto-save every 1000 iterations to prevent data loss
             if completed_count % 1000 == 0:
                 with open(schema_path, "w") as f:
-                    json.dump(results_list, f, indent=2)
+                    dump_compact_json(results_list, f)
     
     print(f"\n\nProcessing complete! Time taken: {time.time() - start_time:.2f}s")
     print(f"Errors encountered: {error_count}")
@@ -167,7 +210,7 @@ def recompute_dataset(dataset_dir="Output/dataset/batch_1", plot_radars=False, r
     # Save processed dataset
     out_path = os.path.join(dataset_dir, "dataset_schema.json")
     with open(out_path, "w") as f:
-        json.dump(results_list, f, indent=2)
+        dump_compact_json(results_list, f)
     print(f"Saved updated results to {out_path}")
 
 if __name__ == "__main__":
